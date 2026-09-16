@@ -35,7 +35,7 @@ const manifest: PaperclipPluginManifestV1 = {
         format: "secret-ref",
         title: "Prodigi API key",
         description:
-          "Prodigi Print API key, sent as the X-API-Key header. Paste your key or pick a saved Paperclip secret. Stored as a secret reference, never in plain config.",
+          "Prodigi Print API key, sent as the X-API-Key header. Paste your key or pick a saved Paperclip secret. Stored as a secret reference, never in plain config. Optional: if left unset, the plugin falls back to PRODIGI_X_API_KEY from the server environment.",
       },
       environment: {
         type: "string",
@@ -53,7 +53,6 @@ const manifest: PaperclipPluginManifestV1 = {
         "x-paperclip-advanced": true,
       },
     },
-    required: ["apiKey"],
   },
   tools: [
     {

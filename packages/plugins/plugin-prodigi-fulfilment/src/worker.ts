@@ -43,20 +43,31 @@ async function getConfig(
   return { ...DEFAULT_CONFIG, ...raw };
 }
 
+async function resolveApiKey(
+  ctx: PluginContext,
+  config: ProdigiPluginConfig,
+  companyId: string,
+): Promise<string> {
+  // Preferred: a secret-ref bound in plugin settings, resolved by the host.
+  if (isSecretRefBinding(config.apiKey)) {
+    return ctx.secrets.resolve(config.apiKey, { companyId, configPath: "apiKey" });
+  }
+  // Fallback: PRODIGI_X_API_KEY injected into the server/worker environment
+  // (the phase-a compose passes it through). Single-tenant, trusted-local only.
+  const envKey = process.env.PRODIGI_X_API_KEY?.trim();
+  if (envKey) return envKey;
+  throw new Error(
+    "Prodigi API key is not configured. Set the plugin's `apiKey` secret in Settings, " +
+      "or provide PRODIGI_X_API_KEY in the server environment.",
+  );
+}
+
 async function makeClient(
   ctx: PluginContext,
   companyId: string,
 ): Promise<ProdigiClient> {
   const config = await getConfig(ctx, companyId);
-  if (!isSecretRefBinding(config.apiKey)) {
-    throw new Error(
-      "Prodigi API key is not configured. Set the plugin's `apiKey` secret in Settings.",
-    );
-  }
-  const apiKey = await ctx.secrets.resolve(config.apiKey, {
-    companyId,
-    configPath: "apiKey",
-  });
+  const apiKey = await resolveApiKey(ctx, config, companyId);
   // ctx.http.fetch is capability-gated (http.outbound) and returns a standard
   // Response, which structurally satisfies FetchImpl.
   const fetchImpl: FetchImpl = (url, init) => ctx.http.fetch(url, init);
@@ -253,7 +264,15 @@ const plugin: PaperclipPlugin = definePlugin({
     const errors: string[] = [];
     const warnings: string[] = [];
     if (!isSecretRefBinding(cfg.apiKey)) {
-      errors.push("Prodigi API key (apiKey) must be set to a saved secret reference.");
+      if (process.env.PRODIGI_X_API_KEY?.trim()) {
+        warnings.push(
+          "No apiKey secret set — falling back to PRODIGI_X_API_KEY from the server environment.",
+        );
+      } else {
+        errors.push(
+          "Prodigi API key is not configured: set the apiKey secret, or provide PRODIGI_X_API_KEY in the server environment.",
+        );
+      }
     }
     if (cfg.environment && cfg.environment !== "live" && cfg.environment !== "sandbox") {
       errors.push(`environment must be "live" or "sandbox", got "${cfg.environment}".`);

@@ -24,7 +24,7 @@ Instance settings (`Company Settings → Instance → Plugins → Prodigi Fulfil
 
 | Field | Notes |
 |-------|-------|
-| `apiKey` | **Secret reference.** Paste your Prodigi `X-API-Key` or pick a saved Paperclip secret. Stored as a `secret_ref`, never in plain config. |
+| `apiKey` | **Secret reference (optional).** Paste your Prodigi `X-API-Key` or pick a saved Paperclip secret. Stored as a `secret_ref`, never in plain config. If unset, the worker falls back to `PRODIGI_X_API_KEY` from the server environment (single-tenant, trusted-local convenience — the phase-a compose injects it). |
 | `environment` | `live` (default) or `sandbox`. Quotes never charge in either. A live key is rejected by the sandbox host and vice-versa. |
 | `baseUrlOverride` | Advanced: override the base URL entirely (e.g. a fixture server). |
 
