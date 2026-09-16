@@ -102,14 +102,23 @@ export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
     pluginKey: "paperclip.novita-sandbox-provider",
     relativePath: "sandbox-providers/novita",
   },
+  {
+    key: "prodigi-fulfilment",
+    pluginKey: "paperclip-prodigi-fulfilment",
+    relativePath: "plugin-prodigi-fulfilment",
+  },
 ];
 
 /**
  * Keys ensured on a self-hosted instance (no managed config present).
- * Exactly the pre-refactor behavior: the kubernetes sandbox provider is
- * auto-installed when its bundle is present, nothing else.
+ * The kubernetes sandbox provider is auto-installed when its bundle is present
+ * (pre-refactor behavior), plus the first-party Prodigi fulfilment connector so
+ * ops agents can capture authenticated quotes without a manual install step.
  */
-export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = ["kubernetes"];
+export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = [
+  "kubernetes",
+  "prodigi-fulfilment",
+];
 
 export function resolveBundledCatalogRoot(
   env: Record<string, string | undefined>,
