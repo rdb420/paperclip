@@ -164,6 +164,19 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
+# Higgsfield Python SDK (higgsfield-client) for agent media generation. Pure
+# Python (only httpx), installed system-wide so `python3 -c "import
+# higgsfield_client"` works for any agent in the container. Credentials are
+# supplied at runtime via env (HF_API_KEY/HF_API_SECRET, mapped from the
+# HIGGSFIELD_* values in docker-compose.phase-a.yml). Debian's python is
+# externally managed (PEP 668), so --break-system-packages is required for a
+# system-site install. Kept in this stable pre-app-copy layer so it is not
+# rebuilt on every commit.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3-pip \
+  && rm -rf /var/lib/apt/lists/* \
+  && pip install --no-cache-dir --break-system-packages "higgsfield-client==0.1.0"
+
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
