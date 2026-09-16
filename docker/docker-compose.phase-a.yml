@@ -80,6 +80,20 @@ services:
       # which is bind-mounted to /paperclip — kept out of the image and the repo.
       GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_PATH: "${GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_PATH:-/paperclip/secrets/google-sheets-sa.json}"
 
+      # ── Higgsfield API (higgsfield-client Python SDK) ──
+      # Media-generation SDK available to agents inside the container. It reads
+      # HF_API_KEY + HF_API_SECRET (or HF_KEY="id:secret"). phase-a.env stores the
+      # two halves as HIGGSFIELD_API_KEY_ID / HIGGSFIELD_API_KEY_SECRET; map them
+      # onto the SDK's own variable names here.
+      HF_API_KEY: "${HIGGSFIELD_API_KEY_ID:-}"
+      HF_API_SECRET: "${HIGGSFIELD_API_KEY_SECRET:-}"
+      # The Dockerfile installs the SDK system-wide for clean rebuilds. This
+      # PYTHONPATH additionally exposes the copy installed into the persistent
+      # /paperclip volume (venvs/higgsfield), so `python3 -c "import
+      # higgsfield_client"` also works on images built before that Dockerfile
+      # change. A missing directory is silently ignored by Python.
+      PYTHONPATH: "/paperclip/venvs/higgsfield/lib/python3.13/site-packages"
+
       # ── Ollama providers (via OpenCode custom providers) ──
       # PAPERCLIP_OPENCODE_PROVIDERS is merged into opencode_local's runtime OpenCode
       # config (see packages/adapters/opencode-local/src/server/runtime-config.ts).
