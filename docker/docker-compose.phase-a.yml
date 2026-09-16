@@ -66,9 +66,11 @@ services:
       #  stay true — its default — for this injection to happen on a local target.)
       PAPERCLIP_OPENCODE_PROVIDERS: '{"ollama":{"npm":"@ai-sdk/openai-compatible","name":"Ollama (host)","options":{"baseURL":"http://host.docker.internal:11434/v1","apiKey":"ollama"},"models":{}}}'
       # Ollama-only agents: OpenCode's helper "small" model defaults to a provider
-      # default that Ollama won't serve, which can abort a run. If you run agents
-      # entirely on Ollama, pin a small model you've pulled, e.g.:
-      # PAPERCLIP_OPENCODE_SMALL_MODEL: "ollama/qwen2.5-coder:7b"
+      # default that Ollama won't serve, which can abort a run (e.g. session-title
+      # generation). Passed through so a host-set value reaches the runtime; empty
+      # is a no-op (OpenRouter/mixed agents). For Ollama-only agents export a pulled
+      # tag, e.g. PAPERCLIP_OPENCODE_SMALL_MODEL=ollama/qwen2.5-coder:7b.
+      PAPERCLIP_OPENCODE_SMALL_MODEL: "${PAPERCLIP_OPENCODE_SMALL_MODEL:-}"
 
       # ── Deployment settings ──
       # "authenticated" requires login, "local_trusted" skips auth
