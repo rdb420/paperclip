@@ -1,29 +1,32 @@
-# Phase A: single-container Paperclip, authenticated + private, reachable over
-# Tailscale (tailnet-only, no public internet exposure).
+# Phase A: Paperclip authenticated + private, reachable over Tailscale as a
+# DEDICATED tailnet node (paperclip.<tailnet>.ts.net) — no public internet.
 #
-# The container port is published to HOST LOOPBACK ONLY. Reachability comes from
-# `tailscale serve` on the host, which terminates TLS on the tailnet and proxies
-# to 127.0.0.1:3100. Do NOT use `tailscale funnel` — that exposes the box to the
-# public internet, which belongs to a later authenticated+public phase.
+# Topology: a `tailscale` sidecar container joins the tailnet as host "paperclip"
+# (userspace, auth-key based — no host sudo) and fronts the paperclip app container
+# over the internal compose network (http://paperclip:3100). The app also publishes
+# to host loopback only. The sidecar's serve config (paperclip-serve.json) sets
+# AllowFunnel, so the origin is PUBLIC on the internet via Tailscale Funnel — used
+# for authenticated+public exposure (Slack webhooks + public API). Requires Funnel
+# enabled for this node in the tailnet admin. For private-only, drop AllowFunnel
+# (Serve = tailnet-only) and set PAPERCLIP_DEPLOYMENT_EXPOSURE=private.
 #
-# Usage:
-#   cd docker
-#   export BETTER_AUTH_SECRET="$(openssl rand -hex 32)"   # generate ONCE, then persist & reuse
-#   export PAPERCLIP_PUBLIC_URL="https://<host>.tailnet.ts.net"
-#   export PAPERCLIP_ALLOWED_HOSTNAMES="<host>.tailnet.ts.net"
-#   export ANTHROPIC_API_KEY="sk-ant-..."   # and/or OPENAI_API_KEY
-#   docker compose -f docker-compose.phase-a.yml up --build -d
+# Usage (secrets/config come from an --env-file, e.g.
+# /home/rdb420/.config/paperclip/phase-a.env):
+#   BETTER_AUTH_SECRET            openssl rand -hex 32; keep stable across rebuilds
+#   TS_AUTHKEY                    Tailscale auth key (reusable, non-ephemeral):
+#                                 https://login.tailscale.com/admin/settings/keys
+#   PAPERCLIP_PUBLIC_URL          https://paperclip.<tailnet>.ts.net
+#   PAPERCLIP_ALLOWED_HOSTNAMES   paperclip.<tailnet>.ts.net
+#   OPENROUTER_API_KEY            primary provider
+#   OLLAMA_API_KEY                Ollama Cloud fallback (https://ollama.com)
+#   docker compose --env-file <envfile> -f docker-compose.phase-a.yml up -d
 #
-# Then on the HOST (not in the container):
-#   tailscale serve --bg 127.0.0.1:3100
-#   tailscale serve status     # confirm https://<host>.ts.net -> 127.0.0.1:3100
+# First user to sign up at https://paperclip.<tailnet>.ts.net becomes instance
+# admin. Then set PAPERCLIP_AUTH_DISABLE_SIGN_UP=true and re-run `up -d` to lock it.
 #
-# First user to sign up at https://<host>.ts.net becomes instance admin. After
-# that, set PAPERCLIP_AUTH_DISABLE_SIGN_UP=true and re-run `up -d` to lock it.
-#
-# NOTE: BETTER_AUTH_SECRET signs session cookies AND agent JWTs — it MUST stay
-# the same across rebuilds or every session and agent key is invalidated. Store
-# it in a secret manager; it is supplied via env, not the data volume.
+# NOTE: BETTER_AUTH_SECRET signs session cookies AND agent JWTs — keep it stable
+# across rebuilds or all sessions and agent keys are invalidated. Supplied via
+# env, not the data volume.
 services:
   paperclip:
     build:
@@ -35,7 +38,8 @@ services:
     # dies visibly rather than starving the host of pids.
     pids_limit: 2048
     ports:
-      # Loopback-only: only `tailscale serve` (host-local) can reach the port.
+      # Loopback-only, for local debugging/health. Tailnet reachability comes from
+      # the `tailscale` sidecar, which proxies to this service over the compose net.
       - "127.0.0.1:${PAPERCLIP_PORT:-3100}:3100"
     # Reach an Ollama server running on the HOST at http://host.docker.internal:11434.
     # host-gateway makes the host resolvable from inside the container on Linux.
@@ -53,18 +57,42 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # Ollama Cloud (hosted) key — used by the ollama-cloud OpenCode provider below.
+      OLLAMA_API_KEY: "${OLLAMA_API_KEY:-}"
 
-      # ── Ollama (local, via OpenCode custom provider) ──
-      # PAPERCLIP_OPENCODE_PROVIDERS is merged into opencode_local's runtime
-      # OpenCode config (see packages/adapters/opencode-local/src/server/runtime-config.ts).
-      # It defines an OpenAI-compatible provider pointed at the host's Ollama /v1
-      # endpoint. The models map is intentionally empty: the per-agent model id is
-      # auto-registered at runtime, so agents just select e.g.
-      #   ollama/qwen2.5-coder:7b   (adapterType: opencode_local)
-      # for whatever tags you've `ollama pull`ed. Edit baseURL/name here if needed.
-      # (apiKey is a dummy — Ollama ignores auth. dangerouslySkipPermissions must
-      #  stay true — its default — for this injection to happen on a local target.)
-      PAPERCLIP_OPENCODE_PROVIDERS: '{"ollama":{"npm":"@ai-sdk/openai-compatible","name":"Ollama (host)","options":{"baseURL":"http://host.docker.internal:11434/v1","apiKey":"ollama"},"models":{}}}'
+      # GitHub access WITHOUT the Paperclip Cloud connector (self-hosted single-tenant
+      # path). The server consumes GITHUB_TOKEN by name for server-side git (cloning
+      # private repos, worktree base refs); agents inherit it for authenticated GitHub
+      # API calls. Use a fine-scoped PAT. A company secret named GITHUB_TOKEN/GH_TOKEN/
+      # PAPERCLIP_GITHUB_TOKEN (Settings → Secrets) takes precedence if you prefer that.
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+
+      # ── Fulfilment / email integration keys ──
+      # Prodigi merchant API key (X-API-Key). The prodigi-fulfilment plugin resolves
+      # this via the Paperclip secret store, not container env; this passthrough also
+      # makes it available to server/agent runtimes that read it by name.
+      PRODIGI_X_API_KEY: "${PRODIGI_X_API_KEY:-}"
+      # AgentMail API key for AgentMail email tooling/webhooks.
+      AGENTMAIL_API_KEY: "${AGENTMAIL_API_KEY:-}"
+      # Google Sheets "robot account" service-account key (enables the Google
+      # Sheets robot connector; users share sheets with the robot's client_email).
+      # The key file lives in the owner-only secrets/ dir under PAPERCLIP_DATA_DIR,
+      # which is bind-mounted to /paperclip — kept out of the image and the repo.
+      GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_PATH: "${GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_PATH:-/paperclip/secrets/google-sheets-sa.json}"
+
+      # ── Ollama providers (via OpenCode custom providers) ──
+      # PAPERCLIP_OPENCODE_PROVIDERS is merged into opencode_local's runtime OpenCode
+      # config (see packages/adapters/opencode-local/src/server/runtime-config.ts).
+      # Two OpenAI-compatible providers are defined:
+      #   ollama        -> local host Ollama (http://host.docker.internal:11434/v1)
+      #   ollama-cloud  -> Ollama Cloud (https://ollama.com/v1, Bearer OLLAMA_API_KEY)
+      # {env:OLLAMA_API_KEY} is expanded server-side. Both models maps are empty:
+      # the per-agent model id is auto-registered at runtime, so agents just select
+      #   ollama/qwen2.5-coder:7b        (local tag you've pulled)
+      #   ollama-cloud/glm-5.3           (cloud model your plan/credits cover)
+      # OpenRouter (primary) is native to OpenCode and needs no block — just the key.
+      # dangerouslySkipPermissions must stay true (default) for this local-target injection.
+      PAPERCLIP_OPENCODE_PROVIDERS: '{"ollama":{"npm":"@ai-sdk/openai-compatible","name":"Ollama (host)","options":{"baseURL":"http://host.docker.internal:11434/v1","apiKey":"ollama"},"models":{}},"ollama-cloud":{"npm":"@ai-sdk/openai-compatible","name":"Ollama Cloud","options":{"baseURL":"https://ollama.com/v1","apiKey":"{env:OLLAMA_API_KEY}"},"models":{}}}'
       # Ollama-only agents: OpenCode's helper "small" model defaults to a provider
       # default that Ollama won't serve, which can abort a run (e.g. session-title
       # generation). Passed through so a host-set value reaches the runtime; empty
@@ -75,10 +103,15 @@ services:
       # ── Deployment settings ──
       # "authenticated" requires login, "local_trusted" skips auth
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
-      # "private" = tailnet/LAN only, "public" = internet-facing (use with TLS)
-      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
-      # HTTPS origin users hit via Tailscale Serve; pins Better Auth cookies/redirects.
+      # "private" = tailnet/LAN only, "public" = internet-facing (Tailscale Funnel/TLS).
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
+      # HTTPS origin users hit (Tailscale Serve for private, Funnel for public); pins
+      # Better Auth cookies/redirects. For public mode this must be the explicit URL.
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:?set PAPERCLIP_PUBLIC_URL to https://<host>.tailnet.ts.net}"
+      # For public exposure, pin explicit base-URL mode so doctor does not fail closed.
+      PAPERCLIP_AUTH_BASE_URL_MODE: "${PAPERCLIP_AUTH_BASE_URL_MODE:-}"
+      # HTTPS origin Slack/chat providers post webhooks to (POST /api/chat-webhooks/*).
+      PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL: "${PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL:-}"
       # Tailscale MagicDNS host(s) the instance trusts, comma-separated.
       PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:?set PAPERCLIP_ALLOWED_HOSTNAMES to <host>.tailnet.ts.net}"
       # Flip to "true" after the first admin has signed up, then re-run `up -d`.
@@ -90,3 +123,33 @@ services:
       # Persistent data directory (embedded PostgreSQL, storage, secrets/master.key,
       # auto-generated PAPERCLIP_TOOL_ACTION_SIGNING_SECRET). Back this up as a unit.
       - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"
+      # Agents' execution workspace: the Tarot-Divination checkout. The merchandise
+      # studio lives at assets/build/merchandise-studio; point the Paperclip project
+      # workspace there. Mounted read-write; the container's node user is uid 1000,
+      # matching the host checkout owner, so agents can edit files and run git.
+      - "${PAPERCLIP_WORKSPACE_DIR:-/mnt/development/docs/Working_Text}:/workspace/tarot-divination"
+      # Read-only skills library (for company-skill import; an approved workspace root).
+      - "${PAPERCLIP_SKILLS_LIBRARY_DIR:-/mnt/development/docs/paperclip/skills}:/workspace/skills-library:ro"
+
+  # Dedicated tailnet node "paperclip" — serves the app over HTTPS on the tailnet
+  # and proxies to the paperclip service (http://paperclip:3100). Userspace mode:
+  # no NET_ADMIN / /dev/net/tun and no host sudo. TS_HOSTNAME sets the tailnet name
+  # (paperclip.<tailnet>.ts.net); the container's own docker hostname is left alone
+  # so `paperclip` still resolves to the app service on the compose network.
+  tailscale:
+    image: tailscale/tailscale:stable
+    environment:
+      TS_AUTHKEY: "${TS_AUTHKEY:?generate a Tailscale auth key (reusable, non-ephemeral) at https://login.tailscale.com/admin/settings/keys and set TS_AUTHKEY}"
+      TS_HOSTNAME: "paperclip"
+      TS_STATE_DIR: "/var/lib/tailscale"
+      TS_USERSPACE: "true"
+      TS_SERVE_CONFIG: "/config/serve.json"
+      TS_EXTRA_ARGS: "--reset"
+    volumes:
+      # Node identity/state — keep it so the node stays "paperclip" across restarts.
+      - "${PAPERCLIP_TS_STATE_DIR:-../data/paperclip-ts}:/var/lib/tailscale"
+      # Serve config: HTTPS :443 -> the app. ${TS_CERT_DOMAIN} is filled in by the image.
+      - "./paperclip-serve.json:/config/serve.json:ro"
+    restart: unless-stopped
+    depends_on:
+      - paperclip
