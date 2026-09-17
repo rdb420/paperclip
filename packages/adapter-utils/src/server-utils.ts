@@ -3388,19 +3388,127 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
   return shapedWorkspaceEnv;
 }
 
+/**
+ * Host keys a local adapter child may inherit from the Paperclip server
+ * process. Same idea as the OpenCode server driver's `sanitizedEnvironment`,
+ * widened for real CLI adapters (HOME, locale, tmp, XDG, NVM, CA/proxy).
+ * Run-specific secrets and Paperclip identity still come from `opts.env`.
+ */
+export const INHERITED_CHILD_PROCESS_ENV_ALLOWLIST: ReadonlySet<string> = new Set([
+  "PATH",
+  "PATHEXT",
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "HOME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "USER",
+  "USERNAME",
+  "LOGNAME",
+  "SHELL",
+  "TERM",
+  "COLORTERM",
+  "LANG",
+  "LANGUAGE",
+  "TZ",
+  "PWD",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "NVM_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "XDG_RUNTIME_DIR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  // Isolated OpenCode serve also forwards this host key; keep local `opencode`
+  // runs working when the key lives only on the Paperclip process.
+  "OPENROUTER_API_KEY",
+  "PAPERCLIP_RUNTIME_API_URL",
+  "PAPERCLIP_LISTEN_HOST",
+  "PAPERCLIP_LISTEN_PORT",
+]);
+
+const INHERITED_CHILD_PROCESS_LC_KEY = /^LC_[A-Z0-9_]{1,32}$/;
+const SPAWN_E2BIG_TOP_ENV_KEYS = 15;
+
+export function isInheritedChildProcessEnvKey(key: string): boolean {
+  if (key === "PAPERCLIPAI_CMD") return false;
+  const upper = key.toUpperCase();
+  if (upper.startsWith("PAPERCLIP_") && !INHERITED_CHILD_PROCESS_ENV_ALLOWLIST.has(upper)) {
+    return false;
+  }
+  return INHERITED_CHILD_PROCESS_ENV_ALLOWLIST.has(upper) || INHERITED_CHILD_PROCESS_LC_KEY.test(upper);
+}
+
 export function sanitizeInheritedPaperclipEnv(
   baseEnv: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...baseEnv };
-  delete env.PAPERCLIPAI_CMD;
-  for (const key of Object.keys(env)) {
-    if (!key.startsWith("PAPERCLIP_")) continue;
-    if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
-    if (key === "PAPERCLIP_LISTEN_HOST") continue;
-    if (key === "PAPERCLIP_LISTEN_PORT") continue;
-    delete env[key];
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (value === undefined) continue;
+    if (!isInheritedChildProcessEnvKey(key)) continue;
+    env[key] = value;
   }
   return env;
+}
+
+export function measureEnvEntryBytes(key: string, value: string): number {
+  return Buffer.byteLength(key, "utf8") + Buffer.byteLength(value, "utf8") + 2;
+}
+
+export function summarizeSpawnEnvironment(
+  env: NodeJS.ProcessEnv,
+  argv: readonly string[],
+): {
+  envBytes: number;
+  argvBytes: number;
+  envKeyCount: number;
+  largestEnvKeys: Array<{ key: string; bytes: number }>;
+} {
+  const sizes: Array<{ key: string; bytes: number }> = [];
+  let envBytes = 0;
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string") continue;
+    const bytes = measureEnvEntryBytes(key, value);
+    envBytes += bytes;
+    sizes.push({ key, bytes });
+  }
+  sizes.sort((a, b) => b.bytes - a.bytes || a.key.localeCompare(b.key));
+  let argvBytes = 0;
+  for (const arg of argv) {
+    argvBytes += Buffer.byteLength(arg, "utf8") + 1;
+  }
+  return {
+    envBytes,
+    argvBytes,
+    envKeyCount: sizes.length,
+    largestEnvKeys: sizes.slice(0, SPAWN_E2BIG_TOP_ENV_KEYS),
+  };
+}
+
+export function formatSpawnE2bigDiagnostic(
+  env: NodeJS.ProcessEnv,
+  command: string,
+  args: readonly string[],
+): string {
+  const summary = summarizeSpawnEnvironment(env, [command, ...args]);
+  const top = summary.largestEnvKeys
+    .map((entry) => `${entry.key}=${entry.bytes}B`)
+    .join(", ");
+  return (
+    `spawn E2BIG: argv+env exceeds the kernel ARG_MAX (argv ${summary.argvBytes}B, env ${summary.envBytes}B across ${summary.envKeyCount} keys). ` +
+    `Largest env keys: ${top || "(none)"}. Values omitted.`
+  );
 }
 
 export function defaultPathForPlatform() {
@@ -4791,10 +4899,21 @@ export async function runChildProcess(
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
+          const e2bigDiagnostic =
+            errno === "E2BIG"
+              ? formatSpawnE2bigDiagnostic(childEnv, target.command, target.args)
+              : null;
+          if (e2bigDiagnostic) {
+            void opts.onLog("stderr", `${e2bigDiagnostic}\n`).catch((logErr) => {
+              onLogError(logErr, runId, "failed to append E2BIG diagnostic");
+            });
+          }
           const msg =
             errno === "ENOENT"
               ? `Failed to start command "${command}" in "${opts.cwd}". Verify adapter command, working directory, and PATH (${pathValue}).`
-              : `Failed to start command "${command}" in "${opts.cwd}": ${err.message}`;
+              : errno === "E2BIG"
+                ? `Failed to start command "${command}" in "${opts.cwd}": ${e2bigDiagnostic}`
+                : `Failed to start command "${command}" in "${opts.cwd}": ${err.message}`;
           reject(new Error(msg));
         });
 

@@ -585,6 +585,38 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("done");
   });
 
+  it("does not inherit host IDE/MCP env keys into the child", async () => {
+    const junkKey = "CURSOR_TEST_INHERIT_JUNK";
+    const previous = process.env[junkKey];
+    process.env[junkKey] = "must-not-leak";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          "process.stdout.write(JSON.stringify({junk: process.env.CURSOR_TEST_INHERIT_JUNK ?? null, fromOpts: process.env.FROM_OPTS ?? null, path: Boolean(process.env.PATH)}))",
+        ],
+        {
+          cwd: process.cwd(),
+          env: { FROM_OPTS: "1" },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        junk: null,
+        fromOpts: "1",
+        path: true,
+      });
+    } finally {
+      if (previous === undefined) delete process.env[junkKey];
+      else process.env[junkKey] = previous;
+    }
+  });
+
   it("waits for onSpawn before sending stdin to the child", async () => {
     const spawnDelayMs = 150;
     const startedAt = Date.now();
