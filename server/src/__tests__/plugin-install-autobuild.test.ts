@@ -359,6 +359,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     }
     cleanupPaths.clear();
     delete process.env["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"];
+    delete process.env["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"];
   });
 
   afterAll(async () => {
@@ -460,6 +461,26 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     expect(res.body.error).toContain("does not appear to be a Paperclip plugin (no manifest found)");
     expect(res.body.error).toContain(path.relative(REPO_ROOT, fixture.packageRoot));
     expect(res.body.error).toContain("pnpm install --ignore-workspace --no-lockfile && pnpm build");
+    expect(existsSync(path.join(fixture.distDir, "manifest.js"))).toBe(false);
+    expect(mockLifecycle.load).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("returns a bun-only standalone bootstrap command when PAPERCLIP_PLUGIN_PACKAGE_MANAGER=bun", async () => {
+    process.env["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] = "1";
+    process.env["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"] = "bun";
+    const fixture = await createBundledPluginFixture("standalone-disabled-bun", { rootDir: standaloneRepoPluginRoot });
+    cleanupPaths.add(fixture.packageRoot);
+    const app = await createInstallApp(db);
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .send({ packageName: fixture.packageRoot, isLocalPath: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("does not appear to be a Paperclip plugin (no manifest found)");
+    expect(res.body.error).toContain(path.relative(REPO_ROOT, fixture.packageRoot));
+    expect(res.body.error).toContain("bun install --no-save --ignore-scripts && bun run build");
+    expect(res.body.error).not.toContain("pnpm");
     expect(existsSync(path.join(fixture.distDir, "manifest.js"))).toBe(false);
     expect(mockLifecycle.load).not.toHaveBeenCalled();
   }, 20_000);

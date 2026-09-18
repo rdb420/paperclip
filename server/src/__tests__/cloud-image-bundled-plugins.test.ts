@@ -70,6 +70,20 @@ describe("cloud image bundled plugins", () => {
     },
   );
 
+  it("relinks the in-repo SDK after standalone provider install in the cloud-plugins stage", () => {
+    const cloudPluginsStage = dockerfile.split("FROM build AS cloud-plugins")[1]?.split(/\nFROM /)[0] ?? "";
+    expect(cloudPluginsStage, "Dockerfile must declare a cloud-plugins stage").not.toBe("");
+    expect(cloudPluginsStage).toContain("pnpm -C \"$dir\" install --ignore-workspace --no-lockfile");
+    expect(cloudPluginsStage).toContain("node scripts/link-plugin-dev-sdk.mjs");
+    expect(cloudPluginsStage).toContain("pnpm -C \"$dir\" build");
+    expect(cloudPluginsStage.indexOf("node scripts/link-plugin-dev-sdk.mjs")).toBeGreaterThan(
+      cloudPluginsStage.indexOf("pnpm -C \"$dir\" install --ignore-workspace --no-lockfile"),
+    );
+    expect(cloudPluginsStage.indexOf("pnpm -C \"$dir\" build")).toBeGreaterThan(
+      cloudPluginsStage.indexOf("node scripts/link-plugin-dev-sdk.mjs"),
+    );
+  });
+
   it("pins the default image build to the production target", () => {
     // The Dockerfile's final stage is `cloud`; without an explicit target
     // the workflow's main build would silently publish the cloud variant

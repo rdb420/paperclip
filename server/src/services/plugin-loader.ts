@@ -773,6 +773,14 @@ function listMissingStandaloneBundledPluginRuntimeDependencies(
   );
 }
 
+function resolveStandalonePluginPackageManager(
+  processEnv: NodeJS.ProcessEnv = process.env,
+): "bun" | "pnpm" {
+  return processEnv["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun"
+    ? "bun"
+    : "pnpm";
+}
+
 function formatLocalPluginManualBuildHint(
   packageRoot: string,
   pkgJson: Record<string, unknown>,
@@ -780,7 +788,10 @@ function formatLocalPluginManualBuildHint(
 ): string {
   if (!isRepoBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) return "";
 
-  const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, { repoRoot: options.repoRoot });
+  const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, {
+    repoRoot: options.repoRoot,
+    processEnv: options.processEnv,
+  });
   if (!manualBuildCommand) return "";
 
   const autoBuildDisabled = (options.processEnv ?? process.env)["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] === "1"
@@ -794,7 +805,7 @@ function buildStandaloneBundledPluginInstallArgs(
   packageRoot: string,
   processEnv: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  if (processEnv["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun") {
+  if (resolveStandalonePluginPackageManager(processEnv) === "bun") {
     return ["install", "--no-save", "--ignore-scripts"];
   }
 
@@ -810,9 +821,7 @@ function buildStandaloneBundledPluginInstallCommand(
   packageRoot: string,
   processEnv: NodeJS.ProcessEnv = process.env,
 ): string {
-  const packageManager = processEnv["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun"
-    ? "bun"
-    : "pnpm";
+  const packageManager = resolveStandalonePluginPackageManager(processEnv);
   const installArgs = buildStandaloneBundledPluginInstallArgs(packageRoot, processEnv);
   return `${packageManager} ${installArgs.join(" ")}`;
 }
@@ -825,10 +834,9 @@ function buildLocalPluginRecoveryCommand(
   if (isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) {
     const repoRoot = options.repoRoot ?? REPO_ROOT;
     const relativePath = path.relative(repoRoot, packageRoot) || ".";
-    const packageManager = options.processEnv?.["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun"
-      ? "bun"
-      : "pnpm";
-    const installCommand = buildStandaloneBundledPluginInstallCommand(packageRoot, options.processEnv);
+    const processEnv = options.processEnv ?? process.env;
+    const packageManager = resolveStandalonePluginPackageManager(processEnv);
+    const installCommand = buildStandaloneBundledPluginInstallCommand(packageRoot, processEnv);
     return `cd ${relativePath} && ${installCommand} && ${packageManager} ${packageManager === "bun" ? "run build" : "build"}`;
   }
 
@@ -847,14 +855,16 @@ function buildLocalPluginBuildCommands(
 ): LocalPluginBuildCommand[] {
   if (isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) {
     const commands: LocalPluginBuildCommand[] = [];
+    const processEnv = options.processEnv ?? process.env;
+    const packageManager = resolveStandalonePluginPackageManager(processEnv);
     const shouldInstallStandaloneRuntime =
       options.needsStandaloneRuntimeBootstrap === true
       || (!existsSync(path.join(packageRoot, "node_modules")) && options.needsBuild !== false);
 
     if (shouldInstallStandaloneRuntime) {
       commands.push({
-        file: options.processEnv?.["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun" ? "bun" : "pnpm",
-        args: buildStandaloneBundledPluginInstallArgs(packageRoot, options.processEnv),
+        file: packageManager,
+        args: buildStandaloneBundledPluginInstallArgs(packageRoot, processEnv),
         cwd: packageRoot,
       });
       commands.push({
@@ -866,10 +876,8 @@ function buildLocalPluginBuildCommands(
 
     if (options.needsBuild !== false) {
       commands.push({
-        file: options.processEnv?.["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun" ? "bun" : "pnpm",
-        args: options.processEnv?.["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun"
-          ? ["run", "build"]
-          : ["build"],
+        file: packageManager,
+        args: packageManager === "bun" ? ["run", "build"] : ["build"],
         cwd: packageRoot,
       });
     }
