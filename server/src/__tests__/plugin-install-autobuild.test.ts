@@ -241,18 +241,24 @@ describe("ensureLocalPluginBuilt", () => {
       { execFileAsyncImpl: execStub },
     );
 
-    expect(execStub).toHaveBeenCalledTimes(2);
+    expect(execStub).toHaveBeenCalledTimes(3);
     expect(execStub).toHaveBeenNthCalledWith(
       1,
       "pnpm",
       installArgs,
-      { cwd: fixture.packageRoot, timeout: 120_000 },
+      expect.objectContaining({ cwd: fixture.packageRoot, timeout: 120_000, env: expect.objectContaining({ NODE_ENV: "development", CI: "true" }) }),
     );
     expect(execStub).toHaveBeenNthCalledWith(
       2,
+      "node",
+      [path.join(REPO_ROOT, "scripts", "link-plugin-dev-sdk.mjs")],
+      expect.objectContaining({ cwd: REPO_ROOT, env: expect.objectContaining({ NODE_ENV: "development", CI: "true" }) }),
+    );
+    expect(execStub).toHaveBeenNthCalledWith(
+      3,
       "pnpm",
       ["build"],
-      { cwd: fixture.packageRoot, timeout: 120_000 },
+      expect.objectContaining({ cwd: fixture.packageRoot, timeout: 120_000, env: expect.objectContaining({ NODE_ENV: "development", CI: "true" }) }),
     );
   });
 
@@ -273,12 +279,64 @@ describe("ensureLocalPluginBuilt", () => {
       { execFileAsyncImpl: execStub },
     );
 
-    expect(execStub).toHaveBeenCalledTimes(1);
+    expect(execStub).toHaveBeenCalledTimes(2);
     expect(execStub).toHaveBeenNthCalledWith(
       1,
       "pnpm",
       ["install", "--ignore-workspace", "--no-lockfile"],
-      { cwd: fixture.packageRoot, timeout: 120_000 },
+      expect.objectContaining({ cwd: fixture.packageRoot, timeout: 120_000, env: expect.objectContaining({ NODE_ENV: "development", CI: "true" }) }),
+    );
+    expect(execStub).toHaveBeenNthCalledWith(
+      2,
+      "node",
+      [path.join(REPO_ROOT, "scripts", "link-plugin-dev-sdk.mjs")],
+      expect.objectContaining({ cwd: REPO_ROOT, env: expect.objectContaining({ NODE_ENV: "development", CI: "true" }) }),
+    );
+  });
+
+  it("uses Bun only when explicitly selected for standalone plugins", async () => {
+    const fixture = await createBundledPluginFixture("bun", { rootDir: standaloneRepoPluginRoot });
+    cleanupPaths.add(fixture.packageRoot);
+
+    const execStub = vi.fn(async (_file: string, args: readonly string[]) => {
+      if (args[0] === "install") {
+        await mkdir(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"), { recursive: true });
+      }
+      if (args[0] === "run" && args[1] === "build") {
+        await mkdir(path.join(fixture.distDir, "ui"), { recursive: true });
+        await writeFile(path.join(fixture.distDir, "manifest.js"), "export default {};\n", "utf8");
+        await writeFile(path.join(fixture.distDir, "worker.js"), "export {};\n", "utf8");
+        await writeFile(path.join(fixture.distDir, "ui", "index.js"), "export default {};\n", "utf8");
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    await ensureLocalPluginBuilt(
+      fixture.packageRoot,
+      JSON.parse(await readFile(path.join(fixture.packageRoot, "package.json"), "utf8")) as Record<string, unknown>,
+      {
+        processEnv: { PAPERCLIP_PLUGIN_PACKAGE_MANAGER: "bun" },
+        execFileAsyncImpl: execStub,
+      },
+    );
+
+    expect(execStub).toHaveBeenNthCalledWith(
+      1,
+      "bun",
+      ["install", "--no-save", "--ignore-scripts"],
+      expect.objectContaining({ cwd: fixture.packageRoot, timeout: 120_000, env: expect.objectContaining({ NODE_ENV: "development", CI: "true" }) }),
+    );
+    expect(execStub).toHaveBeenNthCalledWith(
+      2,
+      "node",
+      [path.join(REPO_ROOT, "scripts", "link-plugin-dev-sdk.mjs")],
+      expect.objectContaining({ cwd: REPO_ROOT, env: expect.objectContaining({ NODE_ENV: "development", CI: "true" }) }),
+    );
+    expect(execStub).toHaveBeenNthCalledWith(
+      3,
+      "bun",
+      ["run", "build"],
+      expect.objectContaining({ cwd: fixture.packageRoot, timeout: 120_000, env: expect.objectContaining({ NODE_ENV: "development", CI: "true" }) }),
     );
   });
 });

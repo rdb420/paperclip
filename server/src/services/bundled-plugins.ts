@@ -111,14 +111,12 @@ export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
 
 /**
  * Keys ensured on a self-hosted instance (no managed config present).
- * The kubernetes sandbox provider is auto-installed when its bundle is present
- * (pre-refactor behavior), plus the first-party Prodigi fulfilment connector so
- * ops agents can capture authenticated quotes without a manual install step.
+ * Exactly the pre-refactor behavior: the kubernetes sandbox provider is
+ * auto-installed when its bundle is present, nothing else. Optional catalog
+ * plugins (Prodigi, Cloudflare, Daytona, …) stay installable by key or
+ * click-to-install; they are not boot defaults.
  */
-export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = [
-  "kubernetes",
-  "prodigi-fulfilment",
-];
+export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = ["kubernetes"];
 
 export function resolveBundledCatalogRoot(
   env: Record<string, string | undefined>,

@@ -792,7 +792,12 @@ function formatLocalPluginManualBuildHint(
 
 function buildStandaloneBundledPluginInstallArgs(
   packageRoot: string,
+  processEnv: NodeJS.ProcessEnv = process.env,
 ): string[] {
+  if (processEnv["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun") {
+    return ["install", "--no-save", "--ignore-scripts"];
+  }
+
   const packageLockfilePath = path.join(packageRoot, "pnpm-lock.yaml");
   // Never let plugin-supplied workspace settings broaden dependency resolution
   // or script execution. When a plugin declares a local install policy, disable
@@ -803,20 +808,28 @@ function buildStandaloneBundledPluginInstallArgs(
 
 function buildStandaloneBundledPluginInstallCommand(
   packageRoot: string,
+  processEnv: NodeJS.ProcessEnv = process.env,
 ): string {
-  return `pnpm ${buildStandaloneBundledPluginInstallArgs(packageRoot).join(" ")}`;
+  const packageManager = processEnv["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun"
+    ? "bun"
+    : "pnpm";
+  const installArgs = buildStandaloneBundledPluginInstallArgs(packageRoot, processEnv);
+  return `${packageManager} ${installArgs.join(" ")}`;
 }
 
 function buildLocalPluginRecoveryCommand(
   packageRoot: string,
   pkgJson: Record<string, unknown>,
-  options: { repoRoot?: string } = {},
+  options: { processEnv?: NodeJS.ProcessEnv; repoRoot?: string } = {},
 ): string | null {
   if (isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) {
     const repoRoot = options.repoRoot ?? REPO_ROOT;
     const relativePath = path.relative(repoRoot, packageRoot) || ".";
-    const installCommand = buildStandaloneBundledPluginInstallCommand(packageRoot);
-    return `cd ${relativePath} && ${installCommand} && pnpm build`;
+    const packageManager = options.processEnv?.["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun"
+      ? "bun"
+      : "pnpm";
+    const installCommand = buildStandaloneBundledPluginInstallCommand(packageRoot, options.processEnv);
+    return `cd ${relativePath} && ${installCommand} && ${packageManager} ${packageManager === "bun" ? "run build" : "build"}`;
   }
 
   return buildLocalPluginBuildCommand(pkgJson);
@@ -827,6 +840,7 @@ function buildLocalPluginBuildCommands(
   pkgJson: Record<string, unknown>,
   options: {
     repoRoot?: string;
+    processEnv?: NodeJS.ProcessEnv;
     needsBuild?: boolean;
     needsStandaloneRuntimeBootstrap?: boolean;
   } = {},
@@ -839,16 +853,23 @@ function buildLocalPluginBuildCommands(
 
     if (shouldInstallStandaloneRuntime) {
       commands.push({
-        file: "pnpm",
-        args: buildStandaloneBundledPluginInstallArgs(packageRoot),
+        file: options.processEnv?.["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun" ? "bun" : "pnpm",
+        args: buildStandaloneBundledPluginInstallArgs(packageRoot, options.processEnv),
         cwd: packageRoot,
+      });
+      commands.push({
+        file: "node",
+        args: [path.join(options.repoRoot ?? REPO_ROOT, "scripts", "link-plugin-dev-sdk.mjs")],
+        cwd: options.repoRoot ?? REPO_ROOT,
       });
     }
 
     if (options.needsBuild !== false) {
       commands.push({
-        file: "pnpm",
-        args: ["build"],
+        file: options.processEnv?.["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun" ? "bun" : "pnpm",
+        args: options.processEnv?.["PAPERCLIP_PLUGIN_PACKAGE_MANAGER"]?.trim().toLowerCase() === "bun"
+          ? ["run", "build"]
+          : ["build"],
         cwd: packageRoot,
       });
     }
@@ -857,6 +878,12 @@ function buildLocalPluginBuildCommands(
 
   const packageName = pkgJson["name"];
   if (typeof packageName !== "string" || packageName.trim().length === 0) return [];
+  if (options.needsBuild === false) return [];
+  // Workspace catalog plugins are compiled in the image build. Auto-build
+  // only runs `pnpm --filter … build` with NODE_ENV=development so TypeScript
+  // is available. Do not `pnpm --filter … install` here: a new package is
+  // not in the lockfile (install-route fixtures), and a production filter
+  // install can shrink the image's /app/node_modules.
   return [{
     file: "pnpm",
     args: ["--filter", packageName, "build"],
@@ -873,7 +900,7 @@ export async function ensureLocalPluginBuilt(
     execFileAsyncImpl?: (
       file: string,
       args: readonly string[],
-      options: { cwd: string; timeout: number },
+      options: { cwd: string; timeout: number; env?: NodeJS.ProcessEnv },
     ) => Promise<{ stdout: string; stderr: string }>;
   } = {},
 ): Promise<void> {
@@ -888,22 +915,32 @@ export async function ensureLocalPluginBuilt(
   if (missingEntrypoints.length === 0 && missingStandaloneRuntimeDeps.length === 0) return;
 
   const packageName = pkgJson["name"];
-  const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, { repoRoot: options.repoRoot });
+  const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, {
+    processEnv,
+    repoRoot: options.repoRoot,
+  });
   if (typeof packageName !== "string" || packageName.trim().length === 0 || !manualBuildCommand) return;
 
   const runExecFileAsync = options.execFileAsyncImpl ?? execFileAsync;
   const buildCommands = buildLocalPluginBuildCommands(packageRoot, pkgJson, {
     repoRoot: options.repoRoot,
+    processEnv,
     needsBuild: missingEntrypoints.length > 0,
     needsStandaloneRuntimeBootstrap: missingStandaloneRuntimeDeps.length > 0,
   });
 
+  // Production images run NODE_ENV=production, which makes pnpm skip
+  // devDependencies (typescript, @types/node, esbuild). Auto-build is a
+  // compile step, so force development for the child process only.
+  // CI=true prevents pnpm from blocking on "reinstall from scratch?" prompts
+  // (those waits surface as the 120s auto-build timeout).
+  const childEnv: NodeJS.ProcessEnv = { ...processEnv, NODE_ENV: "development", CI: "true" };
   try {
     for (const command of buildCommands) {
       await runExecFileAsync(
         command.file,
         command.args,
-        { cwd: command.cwd, timeout: LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS },
+        { cwd: command.cwd, timeout: LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS, env: childEnv },
       );
     }
   } catch (error) {
