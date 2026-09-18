@@ -47,6 +47,11 @@ COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugin
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY packages/plugins/plugin-prodigi-fulfilment/package.json packages/plugins/plugin-prodigi-fulfilment/
+COPY packages/plugins/examples/plugin-kitchen-sink-example/package.json packages/plugins/examples/plugin-kitchen-sink-example/
+COPY packages/plugins/examples/plugin-hello-world-example/package.json packages/plugins/examples/plugin-hello-world-example/
+COPY packages/plugins/examples/plugin-file-browser-example/package.json packages/plugins/examples/plugin-file-browser-example/
+COPY packages/plugins/examples/plugin-authoring-smoke-example/package.json packages/plugins/examples/plugin-authoring-smoke-example/
+COPY packages/plugins/examples/plugin-orchestration-smoke-example/package.json packages/plugins/examples/plugin-orchestration-smoke-example/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
@@ -131,6 +136,39 @@ RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -ty
   && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
+# Catalog plugins must be compiled here. The production image runs with
+# NODE_ENV=production, so click-to-install auto-build cannot fetch TypeScript
+# or @types/node and fails with "Failed to auto-build bundled local plugin".
+RUN pnpm --filter @paperclipai/plugin-workspace-diff \
+         --filter @paperclipai/plugin-llm-wiki \
+         --filter @paperclipai/plugin-prodigi-fulfilment \
+         --filter @paperclipai/plugin-kitchen-sink-example \
+         --filter @paperclipai/plugin-hello-world-example \
+         --filter @paperclipai/plugin-file-browser-example \
+         --filter @paperclipai/plugin-authoring-smoke-example \
+         --filter @paperclipai/plugin-orchestration-smoke-example \
+         build \
+  && test -f packages/plugins/plugin-workspace-diff/dist/manifest.js \
+  && test -f packages/plugins/plugin-llm-wiki/dist/manifest.js \
+  && test -f packages/plugins/plugin-prodigi-fulfilment/dist/manifest.js \
+  && test -f packages/plugins/examples/plugin-kitchen-sink-example/dist/manifest.js \
+  && test -f packages/plugins/examples/plugin-hello-world-example/dist/manifest.js \
+  && test -f packages/plugins/examples/plugin-file-browser-example/dist/manifest.js \
+  && test -f packages/plugins/examples/plugin-authoring-smoke-example/dist/manifest.js \
+  && test -f packages/plugins/examples/plugin-orchestration-smoke-example/dist/manifest.js
+# Workspace-excluded sandbox providers (see pnpm-workspace.yaml). Install
+# standalone, relink the in-repo SDK, then compile — same contract as the
+# cloud-plugins stage, but required so self-hosted Install clicks work.
+RUN set -eu; \
+  for dir in \
+    packages/plugins/sandbox-providers/cloudflare \
+  ; do \
+    test -d "$dir" || { echo "ERROR: missing $dir" >&2; exit 1; }; \
+    pnpm -C "$dir" install --ignore-workspace --no-lockfile; \
+    node scripts/link-plugin-dev-sdk.mjs; \
+    pnpm -C "$dir" build; \
+    test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
+  done
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the
@@ -240,7 +278,7 @@ CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/di
 # actually auto-install belongs here — every entry adds its node_modules
 # to the image. Growing the list is a one-line workflow change.
 FROM build AS cloud-plugins
-ARG CLOUD_BUNDLED_PLUGINS="daytona"
+ARG CLOUD_BUNDLED_PLUGINS="cloudflare"
 RUN set -eu; \
   for name in $CLOUD_BUNDLED_PLUGINS; do \
     dir="packages/plugins/sandbox-providers/$name"; \
@@ -306,8 +344,12 @@ RUN set -eu; \
   test -n "$specifiers" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS names no package" >&2; exit 1; }; \
   pnpm add --ignore-workspace --no-lockfile $specifiers
 
+FROM oven/bun:1.2.21-slim AS bun-runtime
+
 FROM production AS cloud
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
+COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/bun
+ENV PAPERCLIP_PLUGIN_PACKAGE_MANAGER=bun
 # Land the isolated install inside the server's own `node_modules`, the
 # directory Node's module resolution walks up to from `/app/server` for
 # both a CommonJS `require.resolve` and an ECMAScript `import` — an entry

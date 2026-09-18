@@ -21,7 +21,6 @@ const sdkDir = join(repoRoot, "packages", "plugins", "sdk");
 function excludedPluginDirs() {
   return [
     ...readPluginsUnder(join(repoRoot, "packages", "plugins", "sandbox-providers")),
-    join(repoRoot, "packages", "plugins", "examples", "plugin-orchestration-smoke-example"),
   ];
 }
 
